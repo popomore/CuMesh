@@ -114,7 +114,9 @@ struct CudaPtr {
     CudaPtr() : ptr(nullptr) {}
 
     explicit CudaPtr(size_t count) : ptr(nullptr) {
-        CUDA_CHECK(cudaMalloc(&ptr, count * sizeof(T)));
+        if (count > 0) {
+            CUDA_CHECK(cudaMalloc(&ptr, count * sizeof(T)));
+        }
     }
 
     ~CudaPtr() {
@@ -138,6 +140,11 @@ struct CudaPtr {
 
     T* get() const { return ptr; }
     operator T*() const { return ptr; }
+
+    void reset() {
+        if (ptr) cudaFree(ptr);
+        ptr = nullptr;
+    }
 
     T* release() {
         T* p = ptr;

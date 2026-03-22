@@ -178,6 +178,8 @@ int compress_ids(T* ids, size_t N, Buffer<char>& cub_temp_storage, T* inverse=nu
         N
     ));
 
+    cu_indices.reset();
+
     // get diff
     CudaPtr<T> cu_new_ids(N);
     get_diff_kernel<<<(N+BLOCK_SIZE-1)/BLOCK_SIZE, BLOCK_SIZE>>>(
@@ -203,7 +205,8 @@ int compress_ids(T* ids, size_t N, Buffer<char>& cub_temp_storage, T* inverse=nu
             N
         ));
     }
-    
+    cu_ids_sorted.reset();
+
     // scan diff
     temp_storage_bytes = 0;
     CUDA_CHECK(cub::DeviceScan::ExclusiveSum(

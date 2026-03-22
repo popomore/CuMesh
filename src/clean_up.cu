@@ -464,6 +464,8 @@ void CuMesh::fill_holes(float max_hole_perimeter) {
         cu_bound_loop_mask.get()
     );
     CUDA_CHECK(cudaGetLastError());
+    cu_loop_boundary_lengths.reset();
+    cu_bound_loop_perimeters.reset();
 
     // Compress bound loops size
     CudaPtr<int> cu_bound_loops_cnt(L);
@@ -543,6 +545,10 @@ void CuMesh::fill_holes(float max_hole_perimeter) {
     ));
     int new_num_loop_boundaries;
     CUDA_CHECK(cudaMemcpy(&new_num_loop_boundaries, cu_new_num_loop_boundaries.get(), sizeof(int), cudaMemcpyDeviceToHost));
+    cu_bound_loop_mask.reset();
+    cu_loop_bound_loop_ids.reset();
+    cu_loop_boundary_mask.reset();
+    cu_new_num_loop_boundaries.reset();
 
     // Reconstruct new bound loops
     CudaPtr<int> cu_new_loop_boundaries_offset(new_num_loop_boundaries + 1);

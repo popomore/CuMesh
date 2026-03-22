@@ -21,10 +21,41 @@ def make_box_mesh():
 
 
 def make_sphere_mesh(subdivisions=3):
-    """Create a sphere mesh via icosphere subdivision."""
-    import trimesh
-    mesh = trimesh.creation.icosphere(subdivisions=subdivisions)
-    return mesh.vertices.astype(np.float32), mesh.faces.astype(np.int32)
+    """Create a UV sphere mesh without external dependencies."""
+    lat_steps = max(4, subdivisions * 4)
+    lon_steps = max(8, subdivisions * 8)
+
+    lat = np.linspace(0.0, np.pi, lat_steps + 1, dtype=np.float32)
+    lon = np.linspace(0.0, 2.0 * np.pi, lon_steps, dtype=np.float32, endpoint=False)
+    lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
+
+    x = np.sin(lat_grid) * np.cos(lon_grid)
+    y = np.sin(lat_grid) * np.sin(lon_grid)
+    z = np.cos(lat_grid)
+
+    vertices = np.stack([x, y, z], axis=-1).reshape(-1, 3).astype(np.float32)
+
+    faces = []
+    for i in range(lat_steps):
+        for j in range(lon_steps):
+            j_next = (j + 1) % lon_steps
+            v0 = i * lon_steps + j
+            v1 = i * lon_steps + j_next
+            v2 = (i + 1) * lon_steps + j
+            v3 = (i + 1) * lon_steps + j_next
+            if i != 0:
+                faces.append([v0, v2, v1])
+            if i + 1 != lat_steps:
+                faces.append([v1, v2, v3])
+    faces = np.asarray(faces, dtype=np.int32)
+    return vertices, faces
+
+
+def get_gpu_memory_used():
+    """Get GPU memory used via torch.cuda.mem_get_info (tracks all CUDA allocations)."""
+    torch.cuda.synchronize()
+    free, total = torch.cuda.mem_get_info()
+    return total - free
 
 
 def test_simplify_no_leak():
@@ -33,9 +64,6 @@ def test_simplify_no_leak():
     vertices, faces = make_sphere_mesh(4)
     print(f"Mesh: {vertices.shape[0]} vertices, {faces.shape[0]} faces")
 
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
-
     # Warmup
     mesh = cumesh.CuMesh()
     v = torch.tensor(vertices, device='cuda')
@@ -43,22 +71,22 @@ def test_simplify_no_leak():
     mesh.init(v, f)
     mesh.simplify(100)
     mesh.clear_cache()
-    del mesh
-
+    del mesh, v, f
     torch.cuda.empty_cache()
-    initial = torch.cuda.memory_allocated()
 
-    for i in range(10):
+    initial = get_gpu_memory_used()
+
+    for _ in range(10):
         mesh = cumesh.CuMesh()
         v = torch.tensor(vertices, device='cuda')
         f = torch.tensor(faces, device='cuda')
         mesh.init(v, f)
         mesh.simplify(100)
         mesh.clear_cache()
-        del mesh
+        del mesh, v, f
         torch.cuda.empty_cache()
 
-    final = torch.cuda.memory_allocated()
+    final = get_gpu_memory_used()
     leak = final - initial
     print(f"Memory leak: {leak / 1024:.2f} KB")
     assert leak < 1 * 1024 * 1024, f"Potential memory leak: {leak / 1024:.2f} KB"
@@ -73,9 +101,6 @@ def test_fill_holes_no_leak():
     faces = faces[::2]
     print(f"Mesh with holes: {vertices.shape[0]} vertices, {faces.shape[0]} faces")
 
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
-
     # Warmup
     mesh = cumesh.CuMesh()
     v = torch.tensor(vertices, device='cuda')
@@ -83,22 +108,22 @@ def test_fill_holes_no_leak():
     mesh.init(v, f)
     mesh.fill_holes(max_hole_perimeter=1.0)
     mesh.clear_cache()
-    del mesh
-
+    del mesh, v, f
     torch.cuda.empty_cache()
-    initial = torch.cuda.memory_allocated()
 
-    for i in range(10):
+    initial = get_gpu_memory_used()
+
+    for _ in range(10):
         mesh = cumesh.CuMesh()
         v = torch.tensor(vertices, device='cuda')
         f = torch.tensor(faces, device='cuda')
         mesh.init(v, f)
         mesh.fill_holes(max_hole_perimeter=1.0)
         mesh.clear_cache()
-        del mesh
+        del mesh, v, f
         torch.cuda.empty_cache()
 
-    final = torch.cuda.memory_allocated()
+    final = get_gpu_memory_used()
     leak = final - initial
     print(f"Memory leak: {leak / 1024:.2f} KB")
     assert leak < 1 * 1024 * 1024, f"Potential memory leak: {leak / 1024:.2f} KB"
@@ -110,9 +135,6 @@ def test_cleanup_pipeline_no_leak():
     print("\n=== Test: Cleanup Pipeline Memory ===")
     vertices, faces = make_sphere_mesh(4)
     print(f"Mesh: {vertices.shape[0]} vertices, {faces.shape[0]} faces")
-
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
 
     # Warmup
     mesh = cumesh.CuMesh()
@@ -126,10 +148,10 @@ def test_cleanup_pipeline_no_leak():
     mesh.remove_small_connected_components(1e-5)
     mesh.unify_face_orientations()
     mesh.clear_cache()
-    del mesh
-
+    del mesh, v, f
     torch.cuda.empty_cache()
-    initial = torch.cuda.memory_allocated()
+
+    initial = get_gpu_memory_used()
 
     for i in range(5):
         mesh = cumesh.CuMesh()
@@ -143,14 +165,14 @@ def test_cleanup_pipeline_no_leak():
         mesh.remove_small_connected_components(1e-5)
         mesh.unify_face_orientations()
         mesh.clear_cache()
-        del mesh
+        del mesh, v, f
         torch.cuda.empty_cache()
 
         if i % 2 == 0:
-            current = torch.cuda.memory_allocated()
+            current = get_gpu_memory_used()
             print(f"Iteration {i}: {(current - initial) / 1024:+.2f} KB")
 
-    final = torch.cuda.memory_allocated()
+    final = get_gpu_memory_used()
     leak = final - initial
     print(f"Total leak: {leak / 1024:.2f} KB")
     assert leak < 1 * 1024 * 1024, f"Potential memory leak: {leak / 1024:.2f} KB"
