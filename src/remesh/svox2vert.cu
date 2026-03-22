@@ -147,8 +147,7 @@ torch::Tensor cumesh::get_sparse_voxel_grid_active_vertices(
 
     // Get the number of active vertices for each voxel
     size_t N = hashmap_keys.size(0);
-    int* num_vertices;
-    CUDA_CHECK(cudaMalloc(&num_vertices, (M + 1) * sizeof(int)));
+    cumesh::CudaPtr<int> num_vertices(M + 1);
     if (hashmap_keys.dtype() == torch::kUInt32) {
         get_vertex_num<<<(M + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
             N,
@@ -159,7 +158,7 @@ torch::Tensor cumesh::get_sparse_voxel_grid_active_vertices(
             hashmap_keys.data_ptr<uint32_t>(),
             hashmap_vals.data_ptr<uint32_t>(),
             coords.data_ptr<int32_t>(),
-            num_vertices
+            num_vertices.get()
         );
     } else if (hashmap_keys.dtype() == torch::kUInt64) {
         get_vertex_num<<<(M + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
@@ -171,7 +170,7 @@ torch::Tensor cumesh::get_sparse_voxel_grid_active_vertices(
             hashmap_keys.data_ptr<uint64_t>(),
             hashmap_vals.data_ptr<uint32_t>(),
             coords.data_ptr<int32_t>(),
-            num_vertices
+            num_vertices.get()
         );
     } else {
         TORCH_CHECK(false, "Unsupported data type");
@@ -180,13 +179,11 @@ torch::Tensor cumesh::get_sparse_voxel_grid_active_vertices(
 
     // Compute the offset
     size_t temp_storage_bytes = 0;
-    cub::DeviceScan::ExclusiveSum(nullptr, temp_storage_bytes, num_vertices, M + 1);
-    void* d_temp_storage = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-    cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, num_vertices, M + 1);
-    CUDA_CHECK(cudaFree(d_temp_storage));
+    cub::DeviceScan::ExclusiveSum(nullptr, temp_storage_bytes, num_vertices.get(), M + 1);
+    cumesh::CudaPtr<char> d_temp_storage(temp_storage_bytes);
+    cub::DeviceScan::ExclusiveSum(d_temp_storage.get(), temp_storage_bytes, num_vertices.get(), M + 1);
     int total_vertices;
-    CUDA_CHECK(cudaMemcpy(&total_vertices, num_vertices + M, sizeof(int), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&total_vertices, num_vertices.get() + M, sizeof(int), cudaMemcpyDeviceToHost));
 
     // Set the active vertices for each voxel
     auto vertices = torch::empty({total_vertices, 3}, torch::dtype(torch::kInt32).device(hashmap_keys.device()));
@@ -200,7 +197,7 @@ torch::Tensor cumesh::get_sparse_voxel_grid_active_vertices(
             hashmap_keys.data_ptr<uint32_t>(),
             hashmap_vals.data_ptr<uint32_t>(),
             coords.data_ptr<int32_t>(),
-            num_vertices,
+            num_vertices.get(),
             vertices.data_ptr<int32_t>()
         );
     }
@@ -214,14 +211,11 @@ torch::Tensor cumesh::get_sparse_voxel_grid_active_vertices(
             hashmap_keys.data_ptr<uint64_t>(),
             hashmap_vals.data_ptr<uint32_t>(),
             coords.data_ptr<int32_t>(),
-            num_vertices,
+            num_vertices.get(),
             vertices.data_ptr<int32_t>()
         );
     }
     CUDA_CHECK(cudaGetLastError());
-
-    // Free the temporary memory
-    CUDA_CHECK(cudaFree(num_vertices));
 
     return vertices;
 }

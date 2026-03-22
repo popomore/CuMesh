@@ -158,86 +158,77 @@ __global__ void get_diff_kernel(
 
 template<typename T>
 int compress_ids(T* ids, size_t N, Buffer<char>& cub_temp_storage, T* inverse=nullptr) {
-    int *cu_indices, *cu_indices_argsorted;
-    T *cu_ids_sorted;
-    CUDA_CHECK(cudaMalloc(&cu_indices, N * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&cu_indices_argsorted, N * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&cu_ids_sorted, N * sizeof(T)));
-    arange_kernel<<<(N+BLOCK_SIZE-1)/BLOCK_SIZE, BLOCK_SIZE>>>(cu_indices, N);
+    CudaPtr<int> cu_indices(N);
+    CudaPtr<int> cu_indices_argsorted(N);
+    CudaPtr<T> cu_ids_sorted(N);
+    arange_kernel<<<(N+BLOCK_SIZE-1)/BLOCK_SIZE, BLOCK_SIZE>>>(cu_indices.get(), N);
     CUDA_CHECK(cudaGetLastError());
     size_t temp_storage_bytes = 0;
     CUDA_CHECK(cub::DeviceRadixSort::SortPairs(
         nullptr, temp_storage_bytes,
-        ids, cu_ids_sorted,
-        cu_indices, cu_indices_argsorted,
+        ids, cu_ids_sorted.get(),
+        cu_indices.get(), cu_indices_argsorted.get(),
         N
     ));
     cub_temp_storage.resize(temp_storage_bytes);
     CUDA_CHECK(cub::DeviceRadixSort::SortPairs(
         cub_temp_storage.ptr, temp_storage_bytes,
-        ids, cu_ids_sorted,
-        cu_indices, cu_indices_argsorted,
+        ids, cu_ids_sorted.get(),
+        cu_indices.get(), cu_indices_argsorted.get(),
         N
     ));
-    CUDA_CHECK(cudaFree(cu_indices));
 
     // get diff
-    T* cu_new_ids;
-    CUDA_CHECK(cudaMalloc(&cu_new_ids, N * sizeof(T)));
+    CudaPtr<T> cu_new_ids(N);
     get_diff_kernel<<<(N+BLOCK_SIZE-1)/BLOCK_SIZE, BLOCK_SIZE>>>(
-        cu_ids_sorted,
-        cu_new_ids,
+        cu_ids_sorted.get(),
+        cu_new_ids.get(),
         N
     );
     CUDA_CHECK(cudaGetLastError());
 
     // inverse
     if (inverse) {
-        int* cu_num;
-        CUDA_CHECK(cudaMalloc(&cu_num, sizeof(int)));
+        CudaPtr<int> cu_num(1);
         temp_storage_bytes = 0;
         CUDA_CHECK(cub::DeviceSelect::Flagged(
             nullptr, temp_storage_bytes,
-            cu_ids_sorted, cu_new_ids, inverse, cu_num,
+            cu_ids_sorted.get(), cu_new_ids.get(), inverse, cu_num.get(),
             N
         ));
         cub_temp_storage.resize(temp_storage_bytes);
         CUDA_CHECK(cub::DeviceSelect::Flagged(
             cub_temp_storage.ptr, temp_storage_bytes,
-            cu_ids_sorted, cu_new_ids, inverse, cu_num,
+            cu_ids_sorted.get(), cu_new_ids.get(), inverse, cu_num.get(),
             N
         ));
-        CUDA_CHECK(cudaFree(cu_num));
     }
-    CUDA_CHECK(cudaFree(cu_ids_sorted));
     
     // scan diff
     temp_storage_bytes = 0;
     CUDA_CHECK(cub::DeviceScan::ExclusiveSum(
         nullptr, temp_storage_bytes,
-        cu_new_ids,
+        cu_new_ids.get(),
         N
     ));
     cub_temp_storage.resize(temp_storage_bytes);
     CUDA_CHECK(cub::DeviceScan::ExclusiveSum(
         cub_temp_storage.ptr, temp_storage_bytes,
-        cu_new_ids,
+        cu_new_ids.get(),
         N
     ));
     
     // scatter
     scatter_kernel<<<(N+BLOCK_SIZE-1)/BLOCK_SIZE, BLOCK_SIZE>>>(
-        cu_indices_argsorted,
-        cu_new_ids,
+        cu_indices_argsorted.get(),
+        cu_new_ids.get(),
         N,
         ids
     );
     CUDA_CHECK(cudaGetLastError());
     T num_components;
-    CUDA_CHECK(cudaMemcpy(&num_components, cu_new_ids + N-1, sizeof(T), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&num_components, cu_new_ids.get() + N-1, sizeof(T), cudaMemcpyDeviceToHost));
     num_components += 1;
-    CUDA_CHECK(cudaFree(cu_new_ids));
-    CUDA_CHECK(cudaFree(cu_indices_argsorted));
 
     return static_cast<int>(num_components);
 }
@@ -247,28 +238,24 @@ int compress_ids(T* ids, size_t N, Buffer<char>& cub_temp_storage, T* inverse=nu
 
 template <typename T>
 void print_max_val(T* ptr, size_t size) {
-    T* dbg_cu_max_val;
-    CUDA_CHECK(cudaMalloc(&dbg_cu_max_val, sizeof(T)));
+    CudaPtr<T> dbg_cu_max_val(1);
     size_t temp_storage_bytes = 0;
     CUDA_CHECK(cub::DeviceReduce::Max(
         nullptr, temp_storage_bytes,
         ptr,
-        dbg_cu_max_val,
+        dbg_cu_max_val.get(),
         size
     ));
-    char* temp_storage;
-    CUDA_CHECK(cudaMalloc(&temp_storage, temp_storage_bytes));
+    CudaPtr<char> temp_storage(temp_storage_bytes);
     CUDA_CHECK(cub::DeviceReduce::Max(
-        temp_storage, temp_storage_bytes,
+        temp_storage.get(), temp_storage_bytes,
         ptr,
-        dbg_cu_max_val,
+        dbg_cu_max_val.get(),
         size
     ));
     T h_max_val;
-    CUDA_CHECK(cudaMemcpy(&h_max_val, dbg_cu_max_val, sizeof(T), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&h_max_val, dbg_cu_max_val.get(), sizeof(T), cudaMemcpyDeviceToHost));
     std::cout << "Max value: " << h_max_val << std::endl;
-    CUDA_CHECK(cudaFree(dbg_cu_max_val));
-    CUDA_CHECK(cudaFree(temp_storage));
 }
 
 template <typename T>
