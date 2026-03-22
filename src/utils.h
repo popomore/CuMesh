@@ -102,4 +102,56 @@ void swap_buffers(Buffer<T1>& b1, Buffer<T2>& b2) {
 }
 
 
+/**
+ * RAII wrapper for GPU memory allocated with cudaMalloc.
+ * Automatically frees GPU memory when the object goes out of scope,
+ * preventing leaks on exceptions or early returns.
+ */
+template<typename T>
+struct CudaPtr {
+    T* ptr;
+
+    CudaPtr() : ptr(nullptr) {}
+
+    explicit CudaPtr(size_t count) : ptr(nullptr) {
+        if (count > 0) {
+            CUDA_CHECK(cudaMalloc(&ptr, count * sizeof(T)));
+        }
+    }
+
+    ~CudaPtr() {
+        if (ptr) cudaFree(ptr);  // no throw in destructor
+    }
+
+    // Non-copyable
+    CudaPtr(const CudaPtr&) = delete;
+    CudaPtr& operator=(const CudaPtr&) = delete;
+
+    // Movable
+    CudaPtr(CudaPtr&& other) noexcept : ptr(other.ptr) { other.ptr = nullptr; }
+    CudaPtr& operator=(CudaPtr&& other) noexcept {
+        if (this != &other) {
+            if (ptr) cudaFree(ptr);
+            ptr = other.ptr;
+            other.ptr = nullptr;
+        }
+        return *this;
+    }
+
+    T* get() const { return ptr; }
+    operator T*() const { return ptr; }
+
+    void reset() {
+        if (ptr) cudaFree(ptr);
+        ptr = nullptr;
+    }
+
+    T* release() {
+        T* p = ptr;
+        ptr = nullptr;
+        return p;
+    }
+};
+
+
 } // namespace cumesh
